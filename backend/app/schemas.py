@@ -1,29 +1,27 @@
-"""Pydantic request/response schemas."""
+"""Pydantic request schemas.
+
+There are no hardcoded parameter columns (no `parm1/parm2/parm3`).
+Responses are plain dicts built from the real columns of the `cities`
+table, so whatever columns exist in the database are returned as-is.
+
+Create/update bodies accept extra fields; the routes validate them
+against the actual table columns (unknown columns → 400).
+"""
 
 from pydantic import BaseModel, ConfigDict, Field
 
 
-class CityBase(BaseModel):
-    name: str = Field(min_length=1, max_length=80)
-    parm1: float = 0
-    parm2: float = 0
-    parm3: float = 0
+class CityCreate(BaseModel):
+    """Body for POST /api/cities — `name` plus any real columns."""
 
+    model_config = ConfigDict(extra="allow")
 
-class CityCreate(CityBase):
-    """Body for POST /api/cities."""
+    name: str | None = Field(default=None, min_length=1, max_length=80)
 
 
 class CityUpdate(BaseModel):
     """Body for PUT /api/cities/{id} — every field is optional."""
 
+    model_config = ConfigDict(extra="allow")
+
     name: str | None = Field(default=None, min_length=1, max_length=80)
-    parm1: float | None = None
-    parm2: float | None = None
-    parm3: float | None = None
-
-
-class CityRead(CityBase):
-    id: int
-
-    model_config = ConfigDict(from_attributes=True)

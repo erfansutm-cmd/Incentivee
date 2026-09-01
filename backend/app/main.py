@@ -3,60 +3,44 @@
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from sqlalchemy import text
+from sqlalchemy import inspect, text
 from sqlalchemy.exc import SQLAlchemyError
 
 from app.api.routes.cities import router as cities_router
 from app.api.routes.health import router as health_router
 from app.core.config import settings
-from app.database import Base, engine
-from app import models  # noqa: F401 — register ORM models on Base
-
-# Columns the app expects, with DB-specific ADD COLUMN definitions
-# (used only when the column is missing from an existing table).
-_REQUIRED_COLUMNS_MYSQL = {
-    "name": "VARCHAR(80) NULL",
-    "parm1": "DOUBLE NOT NULL DEFAULT 0",
-    "parm2": "DOUBLE NOT NULL DEFAULT 0",
-    "parm3": "DOUBLE NOT NULL DEFAULT 0",
-}
-_REQUIRED_COLUMNS_SQLITE = {
-    "name": "VARCHAR(80)",
-    "parm1": "FLOAT NOT NULL DEFAULT 0",
-    "parm2": "FLOAT NOT NULL DEFAULT 0",
-    "parm3": "FLOAT NOT NULL DEFAULT 0",
-}
+from app.database import engine
 
 
-def _sync_table_schema() -> None:
-    """Make the `cities` table usable by the app without destroying data.
+def _ensure_cities_table() -> None:
+    """Create the `cities` table only if it doesn't exist yet.
 
-    - Creates the table if it doesn't exist (with the expected schema).
-    - If the table already exists (e.g. created earlier with fewer or
-      other columns), only ADD the missing expected columns — existing
-      columns and data are left untouched, and extra columns are kept.
+    The database schema is the single source of truth:
+
+    - an existing table is NEVER altered — the API serves whatever
+      columns and values it really contains;
+    - a brand-new database gets a minimal table (just `id` + `name`),
+      with no hardcoded parameter columns.
     """
     with engine.begin() as conn:
-        Base.metadata.create_all(bind=conn)
-
+        inspector = inspect(conn)
+        if inspector.has_table("cities"):
+            return
         if settings.database_url.startswith("mysql"):
-            cols = {
-                row[0]
-                for row in conn.execute(
-                    text(
-                        "SELECT COLUMN_NAME FROM information_schema.COLUMNS "
-                        "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'cities'"
-                    )
-                )
-            }
-            required = _REQUIRED_COLUMNS_MYSQL
+            ddl = (
+                "CREATE TABLE cities ("
+                "id INT AUTO_INCREMENT PRIMARY KEY, "
+                "name VARCHAR(80) NOT NULL UNIQUE"
+                ")"
+            )
         else:  # SQLite (local development)
-            cols = {row[1] for row in conn.execute(text("PRAGMA table_info(cities)"))}
-            required = _REQUIRED_COLUMNS_SQLITE
-
-        for column, ddl in required.items():
-            if column not in cols:
-                conn.execute(text(f'ALTER TABLE cities ADD COLUMN "{column}" {ddl}'))
+            ddl = (
+                "CREATE TABLE cities ("
+                "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+                "name VARCHAR(80) NOT NULL UNIQUE"
+                ")"
+            )
+        conn.execute(text(ddl))
 
 
 def create_app() -> FastAPI:
@@ -83,9 +67,9 @@ def create_app() -> FastAPI:
     app.include_router(cities_router, prefix=settings.api_prefix)
 
     @app.on_event("startup")
-    def create_tables() -> None:
-        """Create or align the `cities` table (simple bootstrap; use Alembic for migrations)."""
-        _sync_table_schema()
+    def ensure_table() -> None:
+        """Create the `cities` table if missing; never alter an existing one."""
+        _ensure_cities_table()
 
     @app.get("/")
     def root() -> dict[str, str]:

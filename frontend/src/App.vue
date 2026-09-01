@@ -3,7 +3,9 @@ import { ref, computed, onMounted } from 'vue'
 import { api } from './api'
 
 // ── State ──────────────────────────────────────────────────────
-const cities = ref([])          // rows as returned by the API
+const columns = ref([])        // real DB columns from GET /api/cities/schema
+const primaryKey = ref('id')   // real primary-key column name
+const rows = ref([])           // rows as returned by the API (all columns)
 const loading = ref(false)
 const saving = ref(false)
 const error = ref('')
@@ -11,10 +13,10 @@ const notice = ref('')
 
 // Inline editing: one row at a time, with a local draft
 const editingId = ref(null)
-const draft = ref({ id: null, name: '', parm1: 0, parm2: 0, parm3: 0 })
+const draft = ref({})
 
-// New-city form
-const newCity = ref({ name: '', parm1: 0, parm2: 0, parm3: 0 })
+// New-row form
+const newRow = ref({})
 const adding = ref(false)
 
 // Delete confirmation
@@ -23,48 +25,122 @@ const deleteTarget = ref(null)
 const deleting = ref(false)
 
 // Sorting
-const sortKey = ref('id')
+const sortKey = ref(null)
 const sortDir = ref(1) // 1 = asc, -1 = desc
 
-// ── Derived ────────────────────────────────────────────────────
-const sortedCities = computed(() =>
-  [...cities.value].sort((a, b) => {
-    const av = a[sortKey.value]
-    const bv = b[sortKey.value]
-    if (typeof av === 'number' && typeof bv === 'number') return (av - bv) * sortDir.value
-    return String(av).localeCompare(String(bv)) * sortDir.value
-  }),
+// ── Column helpers ─────────────────────────────────────────────
+// Everything comes from the real DB schema — nothing is hardcoded.
+const nameColumn = computed(() => columns.value.find((c) => c.name === 'name'))
+
+const numericColumns = computed(() =>
+  columns.value.filter(
+    (c) => c.name !== primaryKey.value && c.name !== 'name' && isNumericType(c.type),
+  ),
 )
 
-const editingRow = computed(() => editingId.value !== null)
+const displayColumns = computed(() =>
+  columns.value.filter((c) => c.name !== primaryKey.value),
+)
+
+function isNumericType(type) {
+  return /int|float|double|real|decimal|numeric/i.test(String(type ?? ''))
+}
+
+function isEditable(col) {
+  return col.name === 'name' || isNumericType(col.type)
+}
+
+function shortType(type) {
+  return String(type ?? '').split('(')[0].toLowerCase()
+}
+
+function formatCell(value) {
+  if (value === null || value === undefined) return '—'
+  return String(value)
+}
+
+// ── Derived ────────────────────────────────────────────────────
+const sortedRows = computed(() => {
+  const key = sortKey.value
+  if (!key) return rows.value
+  return [...rows.value].sort((a, b) => {
+    const av = a[key]
+    const bv = b[key]
+    if (typeof av === 'number' && typeof bv === 'number') return (av - bv) * sortDir.value
+    return String(av ?? '').localeCompare(String(bv ?? '')) * sortDir.value
+  })
+})
+
+function buildEmptyForm() {
+  const form = {}
+  if (nameColumn.value) form.name = ''
+  for (const c of numericColumns.value) form[c.name] = ''
+  return form
+}
+
+function isNewRowValid() {
+  if (nameColumn.value && newRow.value.name.trim().length > 0) return true
+  // No name column (or empty name): valid only if some numeric value was typed.
+  return numericColumns.value.some((c) => String(newRow.value[c.name]).trim() !== '')
+}
 
 function isDraftValid() {
-  return draft.value.name.trim().length > 0
+  if (nameColumn.value) return draft.value.name.trim().length > 0
+  return true
 }
 
 // ── Load ───────────────────────────────────────────────────────
 async function loadCities() {
   loading.value = true
   error.value = ''
+  notice.value = ''
+
+  // 1) The real table structure, straight from the database.
+  let schema = null
   try {
-    cities.value = await api.fetchCities()
+    schema = await api.fetchCitySchema()
   } catch (e) {
-    error.value = `Failed to load cities: ${e.message}`
-    // Show what the database table actually contains so schema mismatches
-    // are visible instead of a generic error.
-    try {
-      const schema = await api.fetchCitySchema()
-      if (schema.columns.length) {
-        error.value += ` — the "cities" table in the DB has columns: ${schema.columns.map((c) => c.name).join(', ')}`
-      } else {
-        error.value += ' — the "cities" table does not exist (or has no columns) in the database'
+    error.value = `Failed to load table schema: ${e.message}`
+  }
+
+  // 2) The rows — all columns, all real values.
+  try {
+    const data = await api.fetchCities()
+    rows.value = data
+
+    if (schema && schema.columns && schema.columns.length) {
+      columns.value = schema.columns
+      primaryKey.value =
+        schema.primary_key || columns.value.find((c) => c.is_pk)?.name || 'id'
+    } else {
+      // Fallback: derive columns from the row keys (everything read-only).
+      deriveColumnsFromRows(data)
+      if (!error.value) {
+        error.value = 'Could not read the table schema — showing raw columns from the rows.'
       }
-    } catch {
-      /* could not reach the schema endpoint either */
     }
+
+    if (!sortKey.value || !columns.value.some((c) => c.name === sortKey.value)) {
+      sortKey.value = primaryKey.value ?? columns.value[0]?.name ?? null
+    }
+  } catch (e) {
+    if (error.value) error.value += ` Failed to load cities: ${e.message}`
+    else error.value = `Failed to load cities: ${e.message}`
   } finally {
     loading.value = false
   }
+}
+
+function deriveColumnsFromRows(data) {
+  const keys = data.length ? Object.keys(data[0]) : []
+  columns.value = keys.map((name) => ({
+    name,
+    type: 'text',
+    nullable: true,
+    is_pk: name === 'id',
+    default: null,
+  }))
+  primaryKey.value = columns.value.find((c) => c.is_pk)?.name ?? 'id'
 }
 
 // ── Sorting ────────────────────────────────────────────────────
@@ -83,25 +159,33 @@ function sortArrow(key) {
 }
 
 // ── Add a row ──────────────────────────────────────────────────
-async function addCity() {
-  const payload = {
-    name: newCity.value.name.trim(),
-    parm1: Number(newCity.value.parm1) || 0,
-    parm2: Number(newCity.value.parm2) || 0,
-    parm3: Number(newCity.value.parm3) || 0,
+async function addRow() {
+  if (!isNewRowValid()) return
+
+  const payload = {}
+  if (nameColumn.value) {
+    const name = newRow.value.name.trim()
+    if (name) payload.name = name
   }
-  if (!payload.name) return
+  // Only send numeric columns the user actually typed into — columns
+  // left blank keep their real DB default instead of a fake 0.
+  for (const c of numericColumns.value) {
+    const raw = String(newRow.value[c.name]).trim()
+    if (raw !== '') payload[c.name] = Number(raw) || 0
+  }
+
+  if (Object.keys(payload).length === 0) return
 
   adding.value = true
   error.value = ''
   notice.value = ''
   try {
     const created = await api.createCity(payload)
-    cities.value.push(created)
-    newCity.value = { name: '', parm1: 0, parm2: 0, parm3: 0 }
-    notice.value = `City "${created.name}" added.`
+    rows.value.push(created)
+    newRow.value = buildEmptyForm()
+    notice.value = nameColumn.value && created.name ? `"${created.name}" added.` : 'Row added.'
   } catch (e) {
-    error.value = `Failed to add city: ${e.message}`
+    error.value = `Failed to add row: ${e.message}`
   } finally {
     adding.value = false
   }
@@ -110,35 +194,37 @@ async function addCity() {
 // ── Start / cancel editing a row ───────────────────────────────
 function startEdit(row) {
   if (editingId.value !== null) return
-  editingId.value = row.id
-  draft.value = {
-    id: row.id,
-    name: row.name,
-    parm1: row.parm1,
-    parm2: row.parm2,
-    parm3: row.parm3,
-  }
+  editingId.value = row[primaryKey.value]
+  const d = {}
+  if (nameColumn.value) d.name = row.name
+  for (const c of numericColumns.value) d[c.name] = row[c.name]
+  draft.value = d
 }
 
 function cancelEdit() {
   editingId.value = null
-  draft.value = { id: null, name: '', parm1: 0, parm2: 0, parm3: 0 }
+  draft.value = {}
 }
 
 // ── Save a single row ──────────────────────────────────────────
 async function saveRow() {
   const id = editingId.value
-  if (id === null || !isDraftValid()) return
+  if (id === null || id === undefined || !isDraftValid()) return
 
-  const original = cities.value.find((c) => c.id === id)
+  const original = rows.value.find((r) => r[primaryKey.value] === id)
   if (!original) return cancelEdit()
 
   // Only send fields that actually changed
   const patch = {}
-  if (draft.value.name.trim() !== original.name) patch.name = draft.value.name.trim()
-  for (const p of ['parm1', 'parm2', 'parm3']) {
-    const v = Number(draft.value[p]) || 0
-    if (v !== Number(original[p])) patch[p] = v
+  if (nameColumn.value) {
+    const name = draft.value.name.trim()
+    if (name !== original.name) patch.name = name
+  }
+  for (const c of numericColumns.value) {
+    const raw = String(draft.value[c.name]).trim()
+    const value = raw === '' ? null : Number(raw) || 0
+    const current = original[c.name] === null || original[c.name] === undefined ? null : Number(original[c.name])
+    if (value !== current) patch[c.name] = value
   }
 
   if (Object.keys(patch).length === 0) return cancelEdit()
@@ -148,9 +234,9 @@ async function saveRow() {
   notice.value = ''
   try {
     const updated = await api.updateCity(id, patch)
-    const idx = cities.value.findIndex((c) => c.id === id)
-    if (idx !== -1) cities.value[idx] = updated
-    notice.value = `City "${updated.name}" saved.`
+    const idx = rows.value.findIndex((r) => r[primaryKey.value] === id)
+    if (idx !== -1) rows.value[idx] = updated
+    notice.value = nameColumn.value && updated.name ? `"${updated.name}" saved.` : 'Row saved.'
     cancelEdit()
   } catch (e) {
     error.value = `Failed to save: ${e.message}`
@@ -168,14 +254,15 @@ function openDelete(row) {
 async function confirmDelete() {
   const target = deleteTarget.value
   if (!target) return
+  const id = target[primaryKey.value]
   deleting.value = true
   error.value = ''
   notice.value = ''
   try {
-    await api.deleteCity(target.id)
-    cities.value = cities.value.filter((c) => c.id !== target.id)
-    if (editingId.value === target.id) cancelEdit()
-    notice.value = `City "${target.name}" deleted.`
+    await api.deleteCity(id)
+    rows.value = rows.value.filter((r) => r[primaryKey.value] !== id)
+    if (editingId.value === id) cancelEdit()
+    notice.value = `Row "${target[nameColumn.value?.name ?? primaryKey.value] ?? id}" deleted.`
     showDeleteDialog.value = false
     deleteTarget.value = null
   } catch (e) {
@@ -186,14 +273,20 @@ async function confirmDelete() {
   }
 }
 
-onMounted(loadCities)
+onMounted(() => {
+  newRow.value = buildEmptyForm()
+  loadCities()
+})
 </script>
 
 <template>
   <section class="page">
     <header class="topbar">
       <h1>Cities</h1>
-      <p class="tagline">City parameters — parm1, parm2, parm3</p>
+      <p class="tagline">
+        Live data from the <code>cities</code> table — columns and values are read straight
+        from the database{{ columns.length ? ` (${columns.length} columns)` : '' }}.
+      </p>
     </header>
 
     <p v-if="error" class="banner error">{{ error }}</p>
@@ -208,28 +301,43 @@ onMounted(loadCities)
     <!-- ── Table ─────────────────────────────────────────── -->
     <div class="table-wrap">
       <div v-if="loading" class="placeholder">Loading cities…</div>
-      <div v-else-if="!cities.length" class="placeholder">
-        No cities yet. Use the form below to add one.
+      <div v-else-if="!columns.length" class="placeholder">
+        Could not load the table — check the database connection.
+      </div>
+      <div v-else-if="!rows.length" class="placeholder">
+        The table has no rows yet. Use the form below to add one.
       </div>
 
       <table v-else class="cities">
         <thead>
           <tr>
-            <th class="col-id" @click="toggleSort('id')">ID{{ sortArrow('id') }}</th>
-            <th class="col-name" @click="toggleSort('name')">Name{{ sortArrow('name') }}</th>
-            <th class="col-param" @click="toggleSort('parm1')">parm1{{ sortArrow('parm1') }}</th>
-            <th class="col-param" @click="toggleSort('parm2')">parm2{{ sortArrow('parm2') }}</th>
-            <th class="col-param" @click="toggleSort('parm3')">parm3{{ sortArrow('parm3') }}</th>
+            <th
+              v-for="c in displayColumns"
+              :key="c.name"
+              :class="c.name === 'name' ? 'col-name' : 'col-param'"
+              :title="c.type ? `type: ${c.type}` : ''"
+              @click="toggleSort(c.name)"
+            >
+              {{ c.name }}{{ sortArrow(c.name) }}
+              <span class="col-type">{{ shortType(c.type) }}</span>
+            </th>
             <th class="col-actions">Actions</th>
           </tr>
         </thead>
         <tbody>
-          <tr v-for="row in sortedCities" :key="row.id" :class="{ editing: row.id === editingId }">
-            <td class="col-id">{{ row.id }}</td>
-
-            <td class="col-name">
-              <template v-if="row.id === editingId">
+          <tr
+            v-for="row in sortedRows"
+            :key="row[primaryKey]"
+            :class="{ editing: row[primaryKey] === editingId }"
+          >
+            <td
+              v-for="c in displayColumns"
+              :key="c.name"
+              :class="c.name === 'name' ? 'col-name' : 'col-param'"
+            >
+              <template v-if="row[primaryKey] === editingId && isEditable(c)">
                 <input
+                  v-if="c.name === 'name'"
                   v-model="draft.name"
                   class="cell-input"
                   type="text"
@@ -238,14 +346,9 @@ onMounted(loadCities)
                   @keydown.enter="saveRow"
                   @keydown.esc="cancelEdit"
                 />
-              </template>
-              <template v-else>{{ row.name }}</template>
-            </td>
-
-            <td v-for="p in ['parm1', 'parm2', 'parm3']" :key="p" class="col-param">
-              <template v-if="row.id === editingId">
                 <input
-                  v-model.number="draft[p]"
+                  v-else
+                  v-model="draft[c.name]"
                   class="cell-input"
                   type="number"
                   step="any"
@@ -253,11 +356,11 @@ onMounted(loadCities)
                   @keydown.esc="cancelEdit"
                 />
               </template>
-              <template v-else>{{ row[p] }}</template>
+              <template v-else>{{ formatCell(row[c.name]) }}</template>
             </td>
 
             <td class="col-actions">
-              <template v-if="row.id === editingId">
+              <template v-if="row[primaryKey] === editingId">
                 <button
                   class="btn small primary"
                   :disabled="saving || !isDraftValid()"
@@ -278,46 +381,36 @@ onMounted(loadCities)
     </div>
 
     <!-- ── Add-new row ───────────────────────────────────── -->
-    <form class="add-row" @submit.prevent="addCity">
+    <form v-if="columns.length" class="add-row" @submit.prevent="addRow">
       <input
-        v-model="newCity.name"
+        v-if="nameColumn"
+        v-model="newRow.name"
         type="text"
-        placeholder="City name…"
+        placeholder="Name…"
         maxlength="80"
         :disabled="adding"
       />
       <input
-        v-model.number="newCity.parm1"
+        v-for="c in numericColumns"
+        :key="c.name"
+        v-model="newRow[c.name]"
         type="number"
         step="any"
-        placeholder="parm1"
+        :placeholder="c.name"
         :disabled="adding"
       />
-      <input
-        v-model.number="newCity.parm2"
-        type="number"
-        step="any"
-        placeholder="parm2"
-        :disabled="adding"
-      />
-      <input
-        v-model.number="newCity.parm3"
-        type="number"
-        step="any"
-        placeholder="parm3"
-        :disabled="adding"
-      />
-      <button class="btn primary" type="submit" :disabled="adding || !newCity.name.trim()">
-        {{ adding ? 'Adding…' : 'Add city' }}
+      <button class="btn primary" type="submit" :disabled="adding || !isNewRowValid()">
+        {{ adding ? 'Adding…' : 'Add row' }}
       </button>
     </form>
 
     <!-- ── Delete confirmation ───────────────────────────── -->
     <div v-if="showDeleteDialog" class="modal-backdrop" @click.self="showDeleteDialog = false">
       <div class="modal" role="dialog" aria-modal="true" aria-labelledby="delete-title">
-        <h3 id="delete-title">Delete city</h3>
+        <h3 id="delete-title">Delete row</h3>
         <p>
-          Are you sure you want to delete <strong>{{ deleteTarget?.name }}</strong>?
+          Are you sure you want to delete
+          <strong>{{ deleteTarget?.[nameColumn?.name ?? primaryKey] }}</strong>?
           This cannot be undone.
         </p>
         <div class="modal-actions">
@@ -349,6 +442,12 @@ onMounted(loadCities)
 .tagline {
   color: #64748b;
   margin: 0.25rem 0 0;
+}
+.tagline code {
+  background: #f1f5f9;
+  border-radius: 4px;
+  padding: 0.1rem 0.35rem;
+  font-size: 0.85em;
 }
 
 .toolbar {
@@ -402,9 +501,11 @@ table.cities {
   border-bottom: none;
 }
 
-.col-id {
-  width: 60px;
-  color: #64748b;
+.col-type {
+  display: block;
+  font-size: 0.7rem;
+  font-weight: 500;
+  color: #94a3b8;
 }
 .col-name {
   font-weight: 600;
@@ -476,8 +577,8 @@ table.cities {
 
 /* ── Add-row form ── */
 .add-row {
-  display: grid;
-  grid-template-columns: 2fr 1fr 1fr 1fr auto;
+  display: flex;
+  flex-wrap: wrap;
   gap: 0.6rem;
   margin-top: 1.1rem;
   padding: 0.9rem 1rem;
@@ -487,7 +588,8 @@ table.cities {
   box-shadow: 0 4px 14px rgba(22, 101, 52, 0.07);
 }
 .add-row input {
-  width: 100%;
+  flex: 1 1 140px;
+  min-width: 110px;
   padding: 0.55rem 0.7rem;
   border: 1px solid #cbd5e1;
   border-radius: 8px;
@@ -498,10 +600,8 @@ table.cities {
   outline: 2px solid #86efac;
   border-color: #16a34a;
 }
-@media (max-width: 720px) {
-  .add-row {
-    grid-template-columns: 1fr;
-  }
+.add-row .btn {
+  flex: 0 0 auto;
 }
 
 /* ── Banners ── */

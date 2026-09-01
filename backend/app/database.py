@@ -1,22 +1,13 @@
 """Database engine and session setup (MySQL via SQLAlchemy).
 
-The engine is created lazily and connects only when first used, so
-the app still runs with the in-memory mock data if the database is
-unreachable or not configured yet.
-
-Usage in a route:
-
-    from fastapi import Depends
-    from sqlalchemy.orm import Session
-    from app.db import get_db
-
-    @router.get("/things")
-    def list_things(db: Session = Depends(get_db)):
-        return db.execute(text("SELECT 1")).scalar()
+The engine is created lazily and connects only when first used. All
+city data is read from and written to this database — there is no
+mock or in-memory data anywhere: the `cities` table itself is the
+single source of truth.
 """
 
 from sqlalchemy import create_engine
-from sqlalchemy.orm import DeclarativeBase, sessionmaker
+from sqlalchemy.orm import sessionmaker
 
 from app.core.config import settings
 
@@ -30,10 +21,6 @@ engine = create_engine(
 )
 
 SessionLocal = sessionmaker(bind=engine, autoflush=False, future=True)
-
-
-class Base(DeclarativeBase):
-    """Declarative base for ORM models."""
 
 
 def get_db():
