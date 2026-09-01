@@ -24,7 +24,8 @@ engine = create_engine(
     settings.database_url,
     pool_pre_ping=True,   # drop stale connections (MySQL closes idle ones)
     pool_recycle=3600,
-    connect_args={"connect_timeout": 5},  # fail fast if DB is unreachable
+    # MySQL-only options: fail fast if the DB is unreachable.
+    connect_args={"connect_timeout": 5} if settings.database_url.startswith("mysql") else {},
     future=True,
 )
 

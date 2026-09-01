@@ -1,8 +1,10 @@
 /**
- * Thin API helper for GateKeeper.
+ * Thin API client for the cities CRUD endpoints.
  *
- * Talks to the (currently mock) backend. When the backend gains a
- * real database these calls stay exactly the same.
+ * GET    /api/cities        -> list of cities
+ * POST   /api/cities        -> create
+ * PUT    /api/cities/{id}   -> update (partial)
+ * DELETE /api/cities/{id}   -> delete
  */
 import { endpoints } from './config'
 
@@ -31,28 +33,28 @@ async function request(url, options = {}) {
 export const api = {
   /** GET /api/cities -> [{ id, name, parm1, parm2, parm3 }] */
   async fetchCities() {
-    const data = await request(endpoints.cities)
-    return data.cities
+    return request(endpoints.cities)
   },
 
   /** POST /api/cities -> created city */
-  async createCity(name) {
+  async createCity(payload) {
     return request(endpoints.cities, {
       method: 'POST',
-      body: JSON.stringify({ name }),
+      body: JSON.stringify(payload),
     })
   },
 
-  /**
-   * PUT /api/cities/{id} -> updated city.
-   * Partial update: pass { name } to rename, { parm1, parm2, parm3 }
-   * to save parameters, or both together.
-   */
+  /** PUT /api/cities/{id} -> updated city (partial update) */
   async updateCity(id, patch) {
     return request(endpoints.city(id), {
       method: 'PUT',
       body: JSON.stringify(patch),
     })
+  },
+
+  /** GET /api/cities/schema -> { table, columns: [...] } — actual DB columns */
+  async fetchCitySchema() {
+    return request(`${endpoints.cities}/schema`)
   },
 
   /** DELETE /api/cities/{id} */
