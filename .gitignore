@@ -10,6 +10,10 @@ venv/
 .mypy_cache/
 .ruff_cache/
 
+# Local dev databases (SQLite)
+*.db
+*.sqlite3
+
 # Node
 node_modules/
 dist/

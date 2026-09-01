@@ -6,6 +6,7 @@ rest of the app only imports ``settings``.
 
 from urllib.parse import quote_plus
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -36,9 +37,16 @@ class Settings(BaseSettings):
     db_password: str = ""
     db_name: str = "incentive"
 
+    # Full override — handy for local development without Docker, e.g.
+    #   DATABASE_URL=sqlite:///./dev.db
+    # or for pointing at any existing database.
+    database_url_override: str | None = Field(default=None, validation_alias="DATABASE_URL")
+
     @property
     def database_url(self) -> str:
         """SQLAlchemy URL, e.g. mysql+pymysql://user:pass@host:3306/db."""
+        if self.database_url_override:
+            return self.database_url_override
         return (
             f"mysql+pymysql://{self.db_user}:{quote_plus(self.db_password)}"
             f"@{self.db_host}:{self.db_port}/{self.db_name}?charset=utf8mb4"

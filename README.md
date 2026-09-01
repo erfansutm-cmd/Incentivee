@@ -1,10 +1,10 @@
-# Incentive — FastAPI + Vue 3 with Docker Compose
+# Incentive — Cities (FastAPI + Vue 3 with Docker Compose)
 
-Empty starter project:
+A simple **Cities** CRUD app:
 
-- **Backend** — [FastAPI](https://fastapi.tiangolo.com/) served by Uvicorn (dev) / Gunicorn with Uvicorn workers (prod), with **MySQL** wired in via SQLAlchemy.
-- **Frontend** — [Vue 3](https://vuejs.org/) + [Vite](https://vitejs.dev/) dev server (dev) / built static files served by **nginx** (prod)
-- Two Compose files: one for development with hot reload, one for production
+- **Backend** — [FastAPI](https://fastapi.tiangolo.com/) served by Uvicorn (dev) / Gunicorn with Uvicorn workers (prod), with **MySQL** wired in via SQLAlchemy. The `cities` table is created automatically on startup.
+- **Frontend** — [Vue 3](https://vuejs.org/) + [Vite](https://vitejs.dev/): one page showing a **cities table** with all columns (`id`, `name`, `parm1`, `parm2`, `parm3`). You can edit any cell inline, add new cities, and delete existing ones.
+- Two Compose files: one for development with hot reload, one for production.
 
 ```
 .
@@ -15,23 +15,48 @@ Empty starter project:
 │   ├── Dockerfile              # multi-stage: target `dev` or `prod`
 │   ├── requirements.txt
 │   └── app/
-│       ├── main.py             # FastAPI app factory
-│       ├── db.py               # SQLAlchemy engine/session (MySQL)
+│       ├── main.py             # FastAPI app factory (+ table creation on startup)
+│       ├── database.py         # SQLAlchemy engine/session
+│       ├── models.py           # City ORM model (table `cities`)
+│       ├── schemas.py          # Pydantic request/response schemas
 │       ├── core/config.py      # settings (env vars) — app name, DB, API_PREFIX, CORS
-│       └── api/routes/health.py
+│       └── api/routes/
+│           ├── health.py       # GET /api/health, GET /api/health/db
+│           └── cities.py       # cities CRUD
 └── frontend/
     ├── Dockerfile              # multi-stage: `dev` (Vite) / `build` / `prod` (nginx)
     ├── nginx.conf              # SPA + /api reverse proxy
     ├── vite.config.js          # dev server + /api proxy
     ├── .env.development        # main API URL for dev
     ├── .env.production         # main API URL for production build
-    └── src/                    # Vue app (App.vue shows a backend health check)
+    └── src/
+        ├── App.vue             # the cities table UI
+        ├── api.js              # API client (fetchCities / createCity / updateCity / deleteCity)
+        └── config.js           # endpoint URLs
 ```
 
-## Prerequisites
+## Cities API
 
-- Docker Engine 24+ and the Docker Compose plugin (`docker compose`)
-- A reachable MySQL server (settings below)
+All routes are mounted under the API prefix (default `/api`).
+
+| Method | Path                | Description                              |
+| ------ | ------------------- | ---------------------------------------- |
+| GET    | `/api/cities`       | List all cities                          |
+| POST   | `/api/cities`       | Create a city (`name` required, `parm1/2/3` optional, default `0`) |
+| GET    | `/api/cities/{id}`  | Get one city                             |
+| PUT    | `/api/cities/{id}`  | Update a city — partial update, any subset of `name`, `parm1`, `parm2`, `parm3` |
+| DELETE | `/api/cities/{id}`  | Delete a city                            |
+
+City object:
+
+```json
+{ "id": 1, "name": "Tehran", "parm1": 10.5, "parm2": 20, "parm3": 0 }
+```
+
+- `name` is unique → creating/renaming to an existing name returns `409`.
+- Missing city returns `404`; empty/too-long names return `422`.
+
+Interactive docs: `http://localhost:8000/api/docs`
 
 ## Database (MySQL)
 
@@ -45,13 +70,11 @@ The backend connects to MySQL via SQLAlchemy + PyMySQL. Settings come from envir
 | `DB_PASSWORD` | (set in `.env`)   |
 | `DB_NAME`     | `incentive`       |
 
-They build the connection URL in `backend/app/core/config.py` (`settings.database_url`); the engine/session live in `backend/app/database.py` — inject a session into a route with `db: Session = Depends(get_db)`.
-
-- **Check connectivity:** `GET /api/health/db` returns `{database, user, server_version}`, or `503` with the connection error if MySQL is unreachable (fails fast after 5s).
-- **Create the database once** on the MySQL server (the connector doesn't create it):
-  `CREATE DATABASE incentive CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;`
-- **If MySQL runs on the Windows host itself** (not the LAN IP), set `DB_HOST=host.docker.internal` in `.env` — Compose already adds the `host-gateway` mapping.
-- Passwords with special characters are URL-encoded automatically when the connection URL is built.
+- The `cities` table is **created automatically on startup** — and if the table already exists (e.g. created earlier with fewer or different columns), the backend **auto-adds the missing expected columns** (`name`, `parm1`, `parm2`, `parm3`) instead of failing; existing columns and data are left untouched. Use Alembic when the schema starts to change.
+- Stuck with an "unknown column" error? Open `GET /api/cities/schema` — it lists the **actual columns of your `cities` table** as they exist in the DB (the UI also shows this in the error banner).
+- **No MySQL handy?** Point the backend at SQLite for local development:
+  `DATABASE_URL=sqlite:///./backend/dev.db` (takes precedence over `DB_*`).
+- If MySQL runs on the Windows host itself (not the LAN IP), set `DB_HOST=host.docker.internal` in `.env`.
 
 ## Development
 
@@ -67,8 +90,23 @@ docker compose up --build
 | DB check | http://localhost:8000/api/health/db |
 
 - Backend code in `backend/` is mounted into the container and Uvicorn auto-reloads on changes.
-- Frontend code in `frontend/` is mounted and Vite provides hot module replacement (HMR); newly added npm dependencies sync automatically on restart.
-- The Vite dev server proxies `/api/*` to the `backend` container, so the frontend calls relative URLs.
+- Frontend code in `frontend/` is mounted and Vite provides HMR. The Vite dev server proxies `/api/*` to the `backend` container, so the frontend calls relative URLs.
+- When running the frontend **without Docker**, point the proxy at the local backend: `VITE_API_PROXY_TARGET=http://localhost:8000 npm run dev` (default target is the Compose service name `backend`).
+
+### Quick local run without Docker
+
+```bash
+# backend (SQLite, no MySQL needed)
+cd backend
+python -m venv .venv && . .venv/bin/activate
+pip install -r requirements.txt
+DATABASE_URL=sqlite:///./dev.db uvicorn app.main:app --reload
+
+# frontend (another terminal)
+cd frontend
+npm install
+VITE_API_PROXY_TARGET=http://localhost:8000 npm run dev
+```
 
 Stop with `Ctrl+C`, then `docker compose down` (add `-v` to also clear the `node_modules` volume).
 
@@ -81,23 +119,22 @@ docker compose -f docker-compose.prod.yml up -d --build
 | Service          | URL                                |
 | ---------------- | ---------------------------------- |
 | App (nginx)      | http://localhost:8080             |
-| API (via nginx)  | http://localhost:8080/api/health  |
+| API (via nginx)  | http://localhost:8080/api/cities  |
 | API docs         | http://localhost:8080/api/docs    |
 
 - The Vue app is compiled to static files (`npm run build`) and served by nginx.
 - nginx reverse-proxies `/api/*` to the FastAPI container on the internal Docker network — the backend publishes no host port.
 - FastAPI runs under Gunicorn with 4 Uvicorn workers (adjust worker count in `backend/Dockerfile`).
 
-Stop with `docker compose -f docker-compose.prod.yml down`.
-
 ## Configuration
 
-- **App name:** `app_name` in `backend/app/core/config.py` (env `APP_NAME`); image/container names live in the Compose files (`incentive-backend`, `incentive-frontend`).
+- **App name:** `app_name` in `backend/app/core/config.py` (env `APP_NAME`).
 - **API base path:** all routes mount under `api_prefix` (default `/api`; env `API_PREFIX`, e.g. `/api/v1`).
-- **Frontend API URL:** `VITE_API_BASE_URL` in `frontend/.env.development` / `.env.production` — empty = same origin (default Docker setup), or a full URL to call a remote API directly (also allow that origin in `cors_origins`).
+- **Full DB override:** `DATABASE_URL` (e.g. `sqlite:///./dev.db` or any SQLAlchemy URL) beats the `DB_*` variables.
+- **Frontend API URL:** `VITE_API_BASE_URL` in `frontend/.env.development` / `frontend/.env.production` — empty = same origin (default Docker setup), or a full URL to call a remote API directly (also allow that origin in `cors_origins`).
 
 ## Where to start coding
 
-- Add API routes in `backend/app/api/routes/` and include them in `backend/app/main.py`; use `Depends(get_db)` to query MySQL.
-- Define ORM models on `app.db.Base` and create tables (e.g. `Base.metadata.create_all(engine)` or Alembic) once your schema is known.
+- Add API routes in `backend/app/api/routes/` and include them in `backend/app/main.py`; use `Depends(get_db)` to query the database.
+- Add ORM models in `backend/app/models.py`; new tables are created on startup.
 - Build UI in `frontend/src/`; add endpoint URLs to the `endpoints` object in `frontend/src/config.js`.
