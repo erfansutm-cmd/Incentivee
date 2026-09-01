@@ -1,0 +1,41 @@
+# ─────────────────────────────────────────────────────────────
+#  PRODUCTION
+#  Run:  docker compose -f docker-compose.prod.yml up -d --build
+#  - FastAPI runs under gunicorn with uvicorn workers (no source
+#    mount, code baked into the image)
+#  - Vue is built to static files and served by nginx, which also
+#    reverse-proxies /api -> backend:8000
+#  - Only nginx publishes a port to the host; the API is reachable
+#    only on the internal Docker network
+# ─────────────────────────────────────────────────────────────
+services:
+  backend:
+    build:
+      context: ./backend
+      target: prod
+    image: incentive-backend:prod
+    container_name: incentive-backend-prod
+    environment:
+      ENVIRONMENT: production
+      # Move/version the whole API by changing this, e.g. /api/v1
+      # API_PREFIX: /api
+      DB_HOST: ${DB_HOST}
+      DB_PORT: ${DB_PORT:-3306}
+      DB_USER: ${DB_USER}
+      DB_PASSWORD: ${DB_PASSWORD}
+      DB_NAME: ${DB_NAME:-incentive}
+    expose:
+      - "8000"
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      target: prod
+    image: incentive-frontend:prod
+    container_name: incentive-frontend-prod
+    ports:
+      - "8080:80"
+    depends_on:
+      - backend
+    restart: unless-stopped

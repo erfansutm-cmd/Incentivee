@@ -1,0 +1,45 @@
+# ─────────────────────────────────────────────────────────────
+#  DEVELOPMENT
+#  Run:  docker compose up --build
+#  - FastAPI: uvicorn with --reload, source mounted as a volume
+#  - Vue: Vite dev server with HMR, source mounted as a volume
+#  - Frontend (Vite) proxies /api -> backend:8000
+# ─────────────────────────────────────────────────────────────
+services:
+  backend:
+    build:
+      context: ./backend
+      target: dev
+    image: incentive-backend:dev
+    container_name: incentive-backend-dev
+    volumes:
+      - ./backend:/app
+    ports:
+      - "8000:8000"
+    environment:
+      ENVIRONMENT: development
+      DB_HOST: ${DB_HOST}
+      DB_PORT: ${DB_PORT:-3306}
+      DB_USER: ${DB_USER}
+      DB_PASSWORD: ${DB_PASSWORD}
+      DB_NAME: ${DB_NAME:-incentive}
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      target: dev
+    image: incentive-frontend:dev
+    container_name: incentive-frontend-dev
+    volumes:
+      - ./frontend:/app
+      # Anonymous volume keeps the container's node_modules instead of
+      # shadowing it with the host folder
+      - /app/node_modules
+    ports:
+      - "5173:5173"
+    environment:
+      NODE_ENV: development
+    depends_on:
+      - backend
+    restart: unless-stopped
