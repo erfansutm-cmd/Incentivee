@@ -16,6 +16,4 @@ export const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? ''
 /** Well-known endpoints (add your own here as the app grows). */
 export const endpoints = {
   health: `${API_BASE_URL}/api/health`,
-  cities: `${API_BASE_URL}/api/cities`,
-  city: (id) => `${API_BASE_URL}/api/cities/${id}`,
 }

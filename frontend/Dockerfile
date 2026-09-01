@@ -15,7 +15,11 @@ COPY . .
 
 EXPOSE 5173
 
-CMD ["npm", "run", "dev", "--", "--host", "0.0.0.0"]
+# Run `npm install` on every start so newly added dependencies in
+# package.json are synced into the (anonymous) node_modules volume —
+# otherwise the volume created on the first run shadows the image's
+# fresh node_modules after adding a package.
+CMD ["sh", "-c", "npm install --no-audit --no-fund && npm run dev -- --host 0.0.0.0"]
 
 ##############################################
 # Build: compile the Vue app into static files

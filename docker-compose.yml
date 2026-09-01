@@ -13,16 +13,21 @@ services:
     image: incentive-backend:dev
     container_name: incentive-backend-dev
     volumes:
-      - ./backend:/app
+      - ./backend:/backend
     ports:
       - "8000:8000"
     environment:
       ENVIRONMENT: development
-      DB_HOST: ${DB_HOST}
+      # Database (values come from the root .env file, with defaults)
+      DB_HOST: ${DB_HOST:-172.21.41.75}
       DB_PORT: ${DB_PORT:-3306}
-      DB_USER: ${DB_USER}
-      DB_PASSWORD: ${DB_PASSWORD}
+      DB_USER: ${DB_USER:-erfan.mohamadi}
+      DB_PASSWORD: ${DB_PASSWORD:-}
       DB_NAME: ${DB_NAME:-incentive}
+      # If MySQL runs on the Windows host itself, set DB_HOST=host.docker.internal
+    extra_hosts:
+      # lets the container reach services on the Windows/macOS host
+      - "host.docker.internal:host-gateway"
     restart: unless-stopped
 
   frontend:
@@ -32,7 +37,7 @@ services:
     image: incentive-frontend:dev
     container_name: incentive-frontend-dev
     volumes:
-      - ./frontend:/app
+      - ./frontend:/frontend
       # Anonymous volume keeps the container's node_modules instead of
       # shadowing it with the host folder
       - /app/node_modules

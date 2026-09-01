@@ -1,8 +1,8 @@
 # Incentive — FastAPI + Vue 3 with Docker Compose
 
-Starter project:
+Empty starter project:
 
-- **Backend** — [FastAPI](https://fastapi.tiangolo.com/) served by Uvicorn (dev) / Gunicorn with Uvicorn workers (prod)
+- **Backend** — [FastAPI](https://fastapi.tiangolo.com/) served by Uvicorn (dev) / Gunicorn with Uvicorn workers (prod), with **MySQL** wired in via SQLAlchemy.
 - **Frontend** — [Vue 3](https://vuejs.org/) + [Vite](https://vitejs.dev/) dev server (dev) / built static files served by **nginx** (prod)
 - Two Compose files: one for development with hot reload, one for production
 
@@ -10,35 +10,48 @@ Starter project:
 .
 ├── docker-compose.yml          # development
 ├── docker-compose.prod.yml     # production
-├── .env.example
+├── .env / .env.example         # settings (DB credentials, etc.)
 ├── backend/
 │   ├── Dockerfile              # multi-stage: target `dev` or `prod`
 │   ├── requirements.txt
 │   └── app/
 │       ├── main.py             # FastAPI app factory
-│       ├── schemas.py          # request/response models (City, CityParams, …)
-│       ├── core/config.py      # settings (env vars) — app name, API_PREFIX, CORS
-│       └── api/routes/
-│           ├── health.py
-│           └── gatekeeper.py   # GateKeeper city API (mock in-memory store)
+│       ├── db.py               # SQLAlchemy engine/session (MySQL)
+│       ├── core/config.py      # settings (env vars) — app name, DB, API_PREFIX, CORS
+│       └── api/routes/health.py
 └── frontend/
     ├── Dockerfile              # multi-stage: `dev` (Vite) / `build` / `prod` (nginx)
     ├── nginx.conf              # SPA + /api reverse proxy
     ├── vite.config.js          # dev server + /api proxy
     ├── .env.development        # main API URL for dev
     ├── .env.production         # main API URL for production build
-    └── src/
-        ├── config.js           # reads VITE_API_BASE_URL, exports endpoints
-        ├── api.js              # fetch wrapper for the city endpoints
-        ├── router/index.js     # vue-router (/gatekeeper, alias /GateKeeper)
-        ├── App.vue
-        └── views/
-            └── GateKeeper.vue  # cities + parm1/2/3 + rename/delete/copy dialogs
+    └── src/                    # Vue app (App.vue shows a backend health check)
 ```
 
 ## Prerequisites
 
 - Docker Engine 24+ and the Docker Compose plugin (`docker compose`)
+- A reachable MySQL server (settings below)
+
+## Database (MySQL)
+
+The backend connects to MySQL via SQLAlchemy + PyMySQL. Settings come from environment variables in the root **`.env`** file (copy `.env.example` → `.env` and fill in; `.env` is git-ignored):
+
+| Variable      | Value             |
+| ------------- | ----------------- |
+| `DB_HOST`     | `172.21.41.75`    |
+| `DB_PORT`     | `3306`            |
+| `DB_USER`     | `erfan.mohamadi`  |
+| `DB_PASSWORD` | (set in `.env`)   |
+| `DB_NAME`     | `incentive`       |
+
+They build the connection URL in `backend/app/core/config.py` (`settings.database_url`); the engine/session live in `backend/app/database.py` — inject a session into a route with `db: Session = Depends(get_db)`.
+
+- **Check connectivity:** `GET /api/health/db` returns `{database, user, server_version}`, or `503` with the connection error if MySQL is unreachable (fails fast after 5s).
+- **Create the database once** on the MySQL server (the connector doesn't create it):
+  `CREATE DATABASE incentive CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;`
+- **If MySQL runs on the Windows host itself** (not the LAN IP), set `DB_HOST=host.docker.internal` in `.env` — Compose already adds the `host-gateway` mapping.
+- Passwords with special characters are URL-encoded automatically when the connection URL is built.
 
 ## Development
 
@@ -51,12 +64,13 @@ docker compose up --build
 | Frontend | http://localhost:5173          |
 | API      | http://localhost:8000          |
 | API docs | http://localhost:8000/api/docs |
+| DB check | http://localhost:8000/api/health/db |
 
 - Backend code in `backend/` is mounted into the container and Uvicorn auto-reloads on changes.
-- Frontend code in `frontend/` is mounted and Vite provides hot module replacement (HMR).
+- Frontend code in `frontend/` is mounted and Vite provides hot module replacement (HMR); newly added npm dependencies sync automatically on restart.
 - The Vite dev server proxies `/api/*` to the `backend` container, so the frontend calls relative URLs.
 
-Stop with `Ctrl+C`, then `docker compose down`.
+Stop with `Ctrl+C`, then `docker compose down` (add `-v` to also clear the `node_modules` volume).
 
 ## Production
 
@@ -74,71 +88,16 @@ docker compose -f docker-compose.prod.yml up -d --build
 - nginx reverse-proxies `/api/*` to the FastAPI container on the internal Docker network — the backend publishes no host port.
 - FastAPI runs under Gunicorn with 4 Uvicorn workers (adjust worker count in `backend/Dockerfile`).
 
-Stop with:
+Stop with `docker compose -f docker-compose.prod.yml down`.
 
-```bash
-docker compose -f docker-compose.prod.yml down
-```
+## Configuration
 
-## Configuration — the "main URL"
-
-The project name and the API's base URL are both centralized so you can change them later in one place.
-
-**Project / app name:**
-
-- Container and image names live in the two Compose files (`incentive-backend`, `incentive-frontend`).
-- The API's own app name (`app_name`) defaults to `"Incentive"` in `backend/app/core/config.py`, overridable with the env var `APP_NAME`.
-
-**API base path (backend side):**
-
-All API routes are mounted under `api_prefix` in `backend/app/core/config.py` (default `/api`). Change it there or with the env var to version/move the whole API:
-
-```bash
-API_PREFIX=/api/v1 docker compose up --build
-```
-
-The health endpoint then moves to `/api/v1/health`, docs to `/api/v1/docs`, etc.
-
-**API URL the frontend calls:**
-
-Set in `frontend/src/config.js` from the Vite env var `VITE_API_BASE_URL`:
-
-- `VITE_API_BASE_URL=` (empty, default) → **same origin**. Requests go to the Vite dev proxy (dev) or nginx (prod), which forward `/api` to the backend. This is the Docker setup.
-- `VITE_API_BASE_URL=https://api.example.com` → the frontend calls that host directly. Set it in `frontend/.env.production` for production builds (Vite bakes env vars in at build time) and add the origin to `cors_origins` in the backend config.
-
-## GateKeeper
-
-Open **http://localhost:5173/GateKeeper** (or `/gatekeeper` — the app uses `vue-router` with history mode; `/` redirects to it).
-
-The UI (`frontend/src/views/GateKeeper.vue`):
-
-- **Select or add cities** — city list on the left, with an "Add a city…" input.
-- **Rename a city** — hover a city and click the ✎ icon to edit the name inline (Enter or ✓ to save, Esc or ✕ to cancel).
-- **Delete a city** — hover a city and click the 🗑 icon; a confirmation popup asks before deleting.
-- **Edit parameters** — each city has `parm1`, `parm2`, `parm3` (placeholders for the real parameters — rename them in `backend/app/schemas.py` and the `PARAMS`/`PARAM_LABELS` arrays in `GateKeeper.vue`).
-- **Save** — writes the values with `PUT /api/cities/{id}`; the Save button enables only when there are unsaved changes.
-- **Copy from another city** — opens a confirmation modal showing a preview of the source city's values vs the current values; the values are applied only after confirmation, and you still review and Save them.
-- Styled with a **green theme** — all colors are CSS variables (`--green-*`) at the top of `GateKeeper.vue`.
-
-### API (mock data for now)
-
-Data is an in-memory list seeded in `backend/app/api/routes/gatekeeper.py`. Restarting the container resets it; swap that store for a real database later — the endpoint shapes don't change.
-
-| Method | Path                 | Purpose                                       | Body                                    |
-| ------ | -------------------- | --------------------------------------------- | --------------------------------------- |
-| GET    | `/api/cities`        | List all cities + parameters                  | —                                       |
-| POST   | `/api/cities`        | Add a city (params default to 0)              | `{"name": "Rome"}`                      |
-| PUT    | `/api/cities/{id}`   | Partial update — rename and/or parameters     | `{"name": "Roma"}` and/or `{"parm1":…}` |
-| DELETE | `/api/cities/{id}`   | Delete a city                                 | —                                       |
-
-Errors: `404` unknown city, `422` invalid body. Interactive docs: `/api/docs`.
-
-> Note: renaming keeps the city's `id` stable (the id is derived from the original name), so bookmarks and references don't break.
+- **App name:** `app_name` in `backend/app/core/config.py` (env `APP_NAME`); image/container names live in the Compose files (`incentive-backend`, `incentive-frontend`).
+- **API base path:** all routes mount under `api_prefix` (default `/api`; env `API_PREFIX`, e.g. `/api/v1`).
+- **Frontend API URL:** `VITE_API_BASE_URL` in `frontend/.env.development` / `.env.production` — empty = same origin (default Docker setup), or a full URL to call a remote API directly (also allow that origin in `cors_origins`).
 
 ## Where to start coding
 
-- Add API routes in `backend/app/api/routes/` and include them in `backend/app/main.py`.
-- Replace the mock store in `backend/app/api/routes/gatekeeper.py` with a database.
-- Rename `parm1/parm2/parm3` in `backend/app/schemas.py` and `frontend/src/views/GateKeeper.vue`.
-- Add pages in `frontend/src/views/` and register them in `frontend/src/router/index.js`.
-- Add new endpoint URLs to the `endpoints` object in `frontend/src/config.js` and call them through `frontend/src/api.js`.
+- Add API routes in `backend/app/api/routes/` and include them in `backend/app/main.py`; use `Depends(get_db)` to query MySQL.
+- Define ORM models on `app.db.Base` and create tables (e.g. `Base.metadata.create_all(engine)` or Alembic) once your schema is known.
+- Build UI in `frontend/src/`; add endpoint URLs to the `endpoints` object in `frontend/src/config.js`.
