@@ -97,8 +97,11 @@ The backend connects to MySQL via SQLAlchemy + PyMySQL. Settings come from envir
   table); it **never alters an existing table** and never invents columns.
 - To see exactly what your `cities` table contains, open
   `GET /api/cities/schema` — it lists the actual columns, types and primary key.
-- **No MySQL handy?** Point the backend at SQLite for local development:
-  `DATABASE_URL=sqlite:///./backend/dev.db` (takes precedence over `DB_*`).
+  The schema is read via SQLAlchemy reflection, so there is no
+  database-specific code in the API — it works with MySQL or any other engine.
+- The app is MySQL-first (`DB_*` settings). A full connection-string override
+  (`DATABASE_URL=sqlite:///./backend/dev.db`, e.g. for a quick offline test)
+  takes precedence over `DB_*`.
 - If MySQL runs on the Windows host itself (not the LAN IP), set `DB_HOST=host.docker.internal` in `.env`.
 
 ## Development

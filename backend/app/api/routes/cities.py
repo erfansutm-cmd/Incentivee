@@ -18,11 +18,10 @@ DELETE /api/cities/{id}     delete a city
 import time
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import MetaData, Table, delete, insert, select, text, update
+from sqlalchemy import MetaData, Table, delete, insert, select, update
 from sqlalchemy.exc import IntegrityError, NoSuchTableError, SQLAlchemyError
 from sqlalchemy.orm import Session
 
-from app.core.config import settings
 from app.database import engine, get_db
 from app.schemas import CityCreate, CityUpdate
 
@@ -114,53 +113,35 @@ def list_cities(db: Session = Depends(get_db)) -> list[dict]:
     return [dict(row) for row in db.execute(stmt).mappings().all()]
 
 
+def _column_default(col) -> str | None:
+    """Human-readable default value of a column (or None if there is none)."""
+    default = getattr(col, "default", None)
+    if default is None or getattr(default, "arg", None) is None:
+        return None
+    return str(default.arg)
+
+
 @router.get("/schema")
-def city_table_schema(db: Session = Depends(get_db)) -> dict:
+def city_table_schema() -> dict:
     """Describe the actual `cities` table as it exists in the database.
 
     The UI uses this to render the table dynamically — the database is
-    the single source of truth for which columns exist.
+    the single source of truth for which columns exist. The structure
+    comes from SQLAlchemy reflection (no database-specific SQL), so the
+    same code works with MySQL, SQLite, or any other engine.
     """
-    if settings.database_url.startswith("mysql"):
-        sql = text(
-            "SELECT COLUMN_NAME, COLUMN_TYPE, IS_NULLABLE, COLUMN_KEY, COLUMN_DEFAULT "
-            "FROM information_schema.COLUMNS "
-            "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'cities' "
-            "ORDER BY ORDINAL_POSITION"
-        )
-        rows = db.execute(sql).all()
-        columns = [
-            {
-                "name": r[0],
-                "type": r[1],
-                "nullable": r[2] == "YES",
-                "is_pk": r[3] == "PRI",
-                "default": r[4],
-            }
-            for r in rows
-        ]
-    else:  # SQLite (local development)
-        rows = db.execute(text("PRAGMA table_info(cities)")).all()
-        columns = [
-            {
-                "name": r[1],
-                "type": r[2],
-                "nullable": not r[3],
-                "is_pk": bool(r[5]),
-                "default": r[4],
-            }
-            for r in rows
-        ]
-    primary_key = next((c["name"] for c in columns if c["is_pk"]), None)
-    if not columns:
-        raise HTTPException(
-            status_code=500,
-            detail=(
-                'The "cities" table does not exist in the database. It is normally '
-                "created automatically on startup — check the database connection "
-                "and restart the backend."
-            ),
-        )
+    table = _cities_table()
+    primary_key = _primary_key(table)
+    columns = [
+        {
+            "name": col.name,
+            "type": str(col.type),
+            "nullable": bool(col.nullable),
+            "is_pk": bool(col.primary_key),
+            "default": _column_default(col),
+        }
+        for col in table.columns
+    ]
     return {"table": "cities", "primary_key": primary_key, "columns": columns}
 
 
