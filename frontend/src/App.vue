@@ -90,44 +90,54 @@ function isDraftValid() {
 }
 
 // ── Load ───────────────────────────────────────────────────────
+let loadSeq = 0 // guard against stale responses after quick re-loads
+
 async function loadCities() {
+  const seq = ++loadSeq
   loading.value = true
   error.value = ''
   notice.value = ''
 
-  // 1) The real table structure, straight from the database.
-  let schema = null
-  try {
-    schema = await api.fetchCitySchema()
-  } catch (e) {
-    error.value = `Failed to load table schema: ${e.message}`
+  // Fetch the real table structure and the rows independently, so one
+  // failing endpoint still produces the other's proper error message.
+  const [schemaResult, rowsResult] = await Promise.allSettled([
+    api.fetchCitySchema(),
+    api.fetchCities(),
+  ])
+
+  if (seq !== loadSeq) return // a newer load replaced this one
+  loading.value = false
+
+  const problems = []
+
+  if (schemaResult.status === 'fulfilled') {
+    const schema = schemaResult.value
+    columns.value = schema.columns ?? []
+    primaryKey.value =
+      schema.primary_key || columns.value.find((c) => c.is_pk)?.name || 'id'
+  } else {
+    columns.value = []
+    problems.push(`Table schema: ${schemaResult.reason.message}`)
   }
 
-  // 2) The rows — all columns, all real values.
-  try {
-    const data = await api.fetchCities()
-    rows.value = data
-
-    if (schema && schema.columns && schema.columns.length) {
-      columns.value = schema.columns
-      primaryKey.value =
-        schema.primary_key || columns.value.find((c) => c.is_pk)?.name || 'id'
-    } else {
+  if (rowsResult.status === 'fulfilled') {
+    rows.value = rowsResult.value
+    if (!columns.value.length) {
       // Fallback: derive columns from the row keys (everything read-only).
-      deriveColumnsFromRows(data)
-      if (!error.value) {
-        error.value = 'Could not read the table schema — showing raw columns from the rows.'
-      }
+      deriveColumnsFromRows(rows.value)
+      problems.push('Could not read the table schema — showing raw columns from the rows.')
     }
+  } else {
+    rows.value = []
+    problems.push(`Cities data: ${rowsResult.reason.message}`)
+  }
 
-    if (!sortKey.value || !columns.value.some((c) => c.name === sortKey.value)) {
-      sortKey.value = primaryKey.value ?? columns.value[0]?.name ?? null
-    }
-  } catch (e) {
-    if (error.value) error.value += ` Failed to load cities: ${e.message}`
-    else error.value = `Failed to load cities: ${e.message}`
-  } finally {
-    loading.value = false
+  if (problems.length) {
+    error.value = `Failed to load: ${problems.join(' | ')}`
+  }
+
+  if (!sortKey.value || !columns.value.some((c) => c.name === sortKey.value)) {
+    sortKey.value = primaryKey.value ?? columns.value[0]?.name ?? null
   }
 }
 
@@ -302,7 +312,11 @@ onMounted(() => {
     <div class="table-wrap">
       <div v-if="loading" class="placeholder">Loading cities…</div>
       <div v-else-if="!columns.length" class="placeholder">
-        Could not load the table — check the database connection.
+        <p>Could not load the <code>cities</code> table from the database.</p>
+        <p class="hint">
+          Check that the backend and the database are running, then try again.
+        </p>
+        <button class="btn" @click="loadCities">⟳ Retry</button>
       </div>
       <div v-else-if="!rows.length" class="placeholder">
         The table has no rows yet. Use the form below to add one.
@@ -465,8 +479,23 @@ onMounted(() => {
 }
 .placeholder {
   color: #64748b;
-  padding: 2.5rem 0;
+  padding: 2.5rem 1rem;
   text-align: center;
+}
+.placeholder p {
+  margin: 0 0 0.5rem;
+}
+.placeholder code {
+  background: #f1f5f9;
+  border-radius: 4px;
+  padding: 0.1rem 0.35rem;
+}
+.placeholder .hint {
+  color: #94a3b8;
+  font-size: 0.85rem;
+}
+.placeholder .btn {
+  margin-top: 0.5rem;
 }
 
 table.cities {

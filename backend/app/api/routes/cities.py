@@ -19,6 +19,7 @@ import time
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import MetaData, Table, delete, insert, select, text, update
+from sqlalchemy.exc import IntegrityError, NoSuchTableError, SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
@@ -41,10 +42,26 @@ def _cities_table() -> Table:
     now = time.monotonic()
     if _META.tables and now - _reflected_at > _REFLECT_TTL_SECONDS:
         _META.clear()  # force a fresh reflection of the current DB schema
-    if "cities" not in _META.tables:
-        _reflected_at = now
-        return Table("cities", _META, autoload_with=engine)
-    return _META.tables["cities"]
+    try:
+        if "cities" not in _META.tables:
+            _reflected_at = now
+            return Table("cities", _META, autoload_with=engine)
+        return _META.tables["cities"]
+    except NoSuchTableError:
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                'The "cities" table does not exist in the database. It is normally '
+                "created automatically on startup — check the database connection "
+                "and restart the backend."
+            ),
+        )
+    except SQLAlchemyError as exc:
+        origin = getattr(exc, "orig", None) or exc
+        raise HTTPException(
+            status_code=503,
+            detail=f'Could not read the "cities" table from the database: {origin}',
+        )
 
 
 def _primary_key(table: Table) -> str | None:
@@ -135,6 +152,15 @@ def city_table_schema(db: Session = Depends(get_db)) -> dict:
             for r in rows
         ]
     primary_key = next((c["name"] for c in columns if c["is_pk"]), None)
+    if not columns:
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                'The "cities" table does not exist in the database. It is normally '
+                "created automatically on startup — check the database connection "
+                "and restart the backend."
+            ),
+        )
     return {"table": "cities", "primary_key": primary_key, "columns": columns}
 
 
@@ -157,8 +183,12 @@ def create_city(payload: CityCreate, db: Session = Depends(get_db)) -> dict:
         data["name"] = str(name).strip()
         _ensure_unique_name(db, table, data["name"])
 
-    result = db.execute(insert(table).values(**data))
-    db.commit()
+    try:
+        result = db.execute(insert(table).values(**data))
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail=f"Could not create city: {exc.orig or exc}")
 
     pk = _primary_key(table)
     new_id = result.inserted_primary_key[0] if result.inserted_primary_key else None
@@ -186,8 +216,12 @@ def update_city(city_id: int, payload: CityUpdate, db: Session = Depends(get_db)
 
     if data:
         pk = _primary_key(table)
-        db.execute(update(table).where(table.c[pk] == city_id).values(**data))
-        db.commit()
+        try:
+            db.execute(update(table).where(table.c[pk] == city_id).values(**data))
+            db.commit()
+        except IntegrityError as exc:
+            db.rollback()
+            raise HTTPException(status_code=409, detail=f"Could not update city: {exc.orig or exc}")
         return _get_city_or_404(city_id, db, table)
     return existing
 
@@ -197,5 +231,9 @@ def delete_city(city_id: int, db: Session = Depends(get_db)) -> None:
     table = _cities_table()
     _get_city_or_404(city_id, db, table)
     pk = _primary_key(table)
-    db.execute(delete(table).where(table.c[pk] == city_id))
-    db.commit()
+    try:
+        db.execute(delete(table).where(table.c[pk] == city_id))
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail=f"Could not delete city: {exc.orig or exc}")

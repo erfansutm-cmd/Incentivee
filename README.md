@@ -59,6 +59,25 @@ looks like `id / name / parm1 / parm2 / parm3`:
 - `name` is unique where a `name` column exists → duplicate names return `409`.
 - Missing city returns `404`; empty/too-long names return `422`.
 
+### Error handling
+
+Every endpoint answers with a proper status code and a human-readable message:
+
+| Case                                       | Status | Message example                                          |
+| ------------------------------------------ | ------ | -------------------------------------------------------- |
+| DB unreachable / connection refused        | `503`  | `Database unreachable or operation failed: …`            |
+| `cities` table missing                     | `500`  | `The "cities" table does not exist … restart the backend`|
+| Unknown column in POST/PUT body            | `400`  | `Column(s) … do not exist in the "cities" table …`       |
+| Duplicate name / constraint violation      | `409`  | `City "…" already exists`                                |
+| City not found                             | `404`  | `City 42 not found`                                      |
+| Missing / empty `name`                     | `422`  | `name is required`                                       |
+
+If the database is down at startup the backend still starts (it logs a
+warning); every request then fails fast with `503` instead of crashing.
+The frontend shows the exact `detail` message in a banner for every
+step — loading, adding, saving, and deleting — and offers a Retry button
+when the table cannot be loaded.
+
 Interactive docs: `http://localhost:8000/api/docs`
 
 ## Database (MySQL)
