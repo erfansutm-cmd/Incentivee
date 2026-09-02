@@ -35,7 +35,8 @@ class Settings(BaseSettings):
     db_port: int = 3306
     db_user: str = "erfan.mohamadi"
     db_password: str = ""
-    db_name: str = "incentive"
+    db_name: str = "incentive"   # database / schema
+    db_table: str = "cities"     # table inside the schema (env DB_TABLE)
 
     # Full override — handy for local development without Docker, e.g.
     #   DATABASE_URL=sqlite:///./dev.db

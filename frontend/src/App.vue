@@ -98,8 +98,9 @@ async function loadCities() {
   error.value = ''
   notice.value = ''
 
-  // Fetch the real table structure and the rows independently, so one
-  // failing endpoint still produces the other's proper error message.
+  // The table status/schema is authoritative: if it cannot be read
+  // (missing table, no access, DB down) we show that proper error and
+  // never render anything from a half-loaded state.
   const [schemaResult, rowsResult] = await Promise.allSettled([
     api.fetchCitySchema(),
     api.fetchCities(),
@@ -108,49 +109,28 @@ async function loadCities() {
   if (seq !== loadSeq) return // a newer load replaced this one
   loading.value = false
 
-  const problems = []
-
-  if (schemaResult.status === 'fulfilled') {
-    const schema = schemaResult.value
-    columns.value = schema.columns ?? []
-    primaryKey.value =
-      schema.primary_key || columns.value.find((c) => c.is_pk)?.name || 'id'
-  } else {
+  if (schemaResult.status === 'rejected') {
+    rows.value = []
     columns.value = []
-    problems.push(`Table schema: ${schemaResult.reason.message}`)
+    error.value = `Failed to load: ${schemaResult.reason.message}`
+    return
   }
+
+  const schema = schemaResult.value
+  columns.value = schema.columns ?? []
+  primaryKey.value =
+    schema.primary_key || columns.value.find((c) => c.is_pk)?.name || 'id'
 
   if (rowsResult.status === 'fulfilled') {
     rows.value = rowsResult.value
-    if (!columns.value.length) {
-      // Fallback: derive columns from the row keys (everything read-only).
-      deriveColumnsFromRows(rows.value)
-      problems.push('Could not read the table schema — showing raw columns from the rows.')
-    }
   } else {
     rows.value = []
-    problems.push(`Cities data: ${rowsResult.reason.message}`)
-  }
-
-  if (problems.length) {
-    error.value = `Failed to load: ${problems.join(' | ')}`
+    error.value = `Failed to load cities data: ${rowsResult.reason.message}`
   }
 
   if (!sortKey.value || !columns.value.some((c) => c.name === sortKey.value)) {
     sortKey.value = primaryKey.value ?? columns.value[0]?.name ?? null
   }
-}
-
-function deriveColumnsFromRows(data) {
-  const keys = data.length ? Object.keys(data[0]) : []
-  columns.value = keys.map((name) => ({
-    name,
-    type: 'text',
-    nullable: true,
-    is_pk: name === 'id',
-    default: null,
-  }))
-  primaryKey.value = columns.value.find((c) => c.is_pk)?.name ?? 'id'
 }
 
 // ── Sorting ────────────────────────────────────────────────────

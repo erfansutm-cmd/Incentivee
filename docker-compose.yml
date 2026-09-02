@@ -24,6 +24,7 @@ services:
       DB_USER: ${DB_USER:-erfan.mohamadi}
       DB_PASSWORD: ${DB_PASSWORD:-}
       DB_NAME: ${DB_NAME:-incentive}
+      DB_TABLE: ${DB_TABLE:-cities}
       # If MySQL runs on the Windows host itself, set DB_HOST=host.docker.internal
     extra_hosts:
       # lets the container reach services on the Windows/macOS host

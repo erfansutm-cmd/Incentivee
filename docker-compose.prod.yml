@@ -23,6 +23,7 @@ services:
       DB_USER: ${DB_USER:-erfan.mohamadi}
       DB_PASSWORD: ${DB_PASSWORD:-}
       DB_NAME: ${DB_NAME:-incentive}
+      DB_TABLE: ${DB_TABLE:-cities}
       # Move/version the whole API by changing this, e.g. /api/v1
       # API_PREFIX: /api
     extra_hosts:
