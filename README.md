@@ -1,9 +1,9 @@
 # Incentive — Cities (FastAPI + Vue 3 with Docker Compose)
 
-A simple **Cities** CRUD app:
+A simple **Cities** CRUD app, 100% driven by the database:
 
-- **Backend** — [FastAPI](https://fastapi.tiangolo.com/) served by Uvicorn (dev) / Gunicorn with Uvicorn workers (prod), with **MySQL** wired in via SQLAlchemy. The `cities` table is created automatically on startup.
-- **Frontend** — [Vue 3](https://vuejs.org/) + [Vite](https://vitejs.dev/): one page showing a **cities table** with all columns (`id`, `name`, `parm1`, `parm2`, `parm3`). You can edit any cell inline, add new cities, and delete existing ones.
+- **Backend** — [FastAPI](https://fastapi.tiangolo.com/) served by Uvicorn (dev) / Gunicorn with Uvicorn workers (prod), with **MySQL** wired in via SQLAlchemy. The backend **never creates or alters tables**: the configured schema (`DB_NAME`, default `incentive`) and table (`DB_TABLE`, default `cities`) must already exist, and every endpoint reports a proper error otherwise.
+- **Frontend** — [Vue 3](https://vuejs.org/) + [Vite](https://vitejs.dev/) + [vue-router](https://router.vuejs.org/): the cities page lives at the sub-URL **`/cities`** (not the site base) and shows the **real `cities` table** — whatever columns and values the database actually contains (e.g. `id`, `name`, `parm1`, `parm2`, `parm3`, …). There is no mock data and no hardcoded columns anywhere: the table schema is read from the DB and the UI renders it dynamically. You can edit any `name`/numeric cell inline, add rows, and delete rows.
 - Two Compose files: one for development with hot reload, one for production.
 
 ```
@@ -15,14 +15,13 @@ A simple **Cities** CRUD app:
 │   ├── Dockerfile              # multi-stage: target `dev` or `prod`
 │   ├── requirements.txt
 │   └── app/
-│       ├── main.py             # FastAPI app factory (+ table creation on startup)
+│       ├── main.py             # FastAPI app factory + global DB error handlers
 │       ├── database.py         # SQLAlchemy engine/session
-│       ├── models.py           # City ORM model (table `cities`)
-│       ├── schemas.py          # Pydantic request/response schemas
+│       ├── schemas.py          # Pydantic request schemas (responses = raw DB columns)
 │       ├── core/config.py      # settings (env vars) — app name, DB, API_PREFIX, CORS
 │       └── api/routes/
 │           ├── health.py       # GET /api/health, GET /api/health/db
-│           └── cities.py       # cities CRUD
+│           └── cities.py       # cities CRUD (reflects the real table structure)
 └── frontend/
     ├── Dockerfile              # multi-stage: `dev` (Vite) / `build` / `prod` (nginx)
     ├── nginx.conf              # SPA + /api reverse proxy
@@ -30,8 +29,8 @@ A simple **Cities** CRUD app:
     ├── .env.development        # main API URL for dev
     ├── .env.production         # main API URL for production build
     └── src/
-        ├── App.vue             # the cities table UI
-        ├── api.js              # API client (fetchCities / createCity / updateCity / deleteCity)
+        ├── App.vue             # dynamic cities table UI
+        ├── api.js              # API client (fetchCities / fetchCitySchema / createCity / updateCity / deleteCity)
         └── config.js           # endpoint URLs
 ```
 
@@ -41,20 +40,44 @@ All routes are mounted under the API prefix (default `/api`).
 
 | Method | Path                | Description                              |
 | ------ | ------------------- | ---------------------------------------- |
-| GET    | `/api/cities`       | List all cities                          |
-| POST   | `/api/cities`       | Create a city (`name` required, `parm1/2/3` optional, default `0`) |
+| GET    | `/api/cities/status`| Live status of the configured table (exists / accessible, column names, PK) |
+| GET    | `/api/cities`       | List all cities — every real column, every real value |
+| GET    | `/api/cities/schema`| Describe the actual table (columns, types, PK) |
+| POST   | `/api/cities`       | Create a city (`name` required when the table has a `name` column; any other existing columns accepted) |
 | GET    | `/api/cities/{id}`  | Get one city                             |
-| PUT    | `/api/cities/{id}`  | Update a city — partial update, any subset of `name`, `parm1`, `parm2`, `parm3` |
+| PUT    | `/api/cities/{id}`  | Update a city — partial update of any subset of the real columns |
 | DELETE | `/api/cities/{id}`  | Delete a city                            |
 
-City object:
+City objects are plain dicts of the table's real columns — e.g. if your table
+looks like `id / name / parm1 / parm2 / parm3`:
 
 ```json
 { "id": 1, "name": "Tehran", "parm1": 10.5, "parm2": 20, "parm3": 0 }
 ```
 
-- `name` is unique → creating/renaming to an existing name returns `409`.
+- The schema is introspected from the DB; **create/update reject columns that
+  don't really exist** with `400` (the response lists the existing columns).
+- `name` is unique where a `name` column exists → duplicate names return `409`.
 - Missing city returns `404`; empty/too-long names return `422`.
+
+### Error handling
+
+Every endpoint answers with a proper status code and a human-readable message
+(the backend never silently swallows a failure and never invents data):
+
+| Case                                       | Status | Message example                                          |
+| ------------------------------------------ | ------ | -------------------------------------------------------- |
+| DB unreachable / connection refused        | `503`  | `Database unreachable or operation failed: …`            |
+| Table does not exist in the DB             | `404`  | `Table "cities" does not exist in database "incentive".` |
+| No access to the table / database          | `403`  | `No access to table "cities" in database "incentive": …` |
+| Unknown column in POST/PUT body            | `400`  | `Column(s) … do not exist in the "cities" table …`       |
+| Duplicate name / constraint violation      | `409`  | `City "…" already exists`                                |
+| City not found                             | `404`  | `City 42 not found`                                      |
+| Missing / empty `name`                     | `422`  | `name is required`                                       |
+
+The frontend shows the exact `detail` message in a banner for every
+step — loading, adding, saving, and deleting — and offers a Retry button
+when the table cannot be loaded.
 
 Interactive docs: `http://localhost:8000/api/docs`
 
@@ -68,12 +91,19 @@ The backend connects to MySQL via SQLAlchemy + PyMySQL. Settings come from envir
 | `DB_PORT`     | `3306`            |
 | `DB_USER`     | `erfan.mohamadi`  |
 | `DB_PASSWORD` | (set in `.env`)   |
-| `DB_NAME`     | `incentive`       |
+| `DB_NAME`     | `incentive`       | ← database / schema |
+| `DB_TABLE`    | `cities`          | ← table inside that schema |
 
-- The `cities` table is **created automatically on startup** — and if the table already exists (e.g. created earlier with fewer or different columns), the backend **auto-adds the missing expected columns** (`name`, `parm1`, `parm2`, `parm3`) instead of failing; existing columns and data are left untouched. Use Alembic when the schema starts to change.
-- Stuck with an "unknown column" error? Open `GET /api/cities/schema` — it lists the **actual columns of your `cities` table** as they exist in the DB (the UI also shows this in the error banner).
-- **No MySQL handy?** Point the backend at SQLite for local development:
-  `DATABASE_URL=sqlite:///./backend/dev.db` (takes precedence over `DB_*`).
+- The database is the **single source of truth**, and the backend **NEVER
+  creates or alters tables** — the `cities` table must already exist in the
+  `incentive` schema. If it doesn't exist (or the DB user has no access to
+  it), every endpoint returns a proper error (`404` / `403`).
+- Check the live table status any time: `GET /api/cities/status` (or
+  `/api/cities/schema` for the full column list). Both are read via SQLAlchemy
+  reflection — no database-specific code, works with MySQL or any other engine.
+- The app is MySQL-first (`DB_*` settings). A full connection-string override
+  (`DATABASE_URL=sqlite:///./backend/dev.db`, e.g. for a quick offline test)
+  takes precedence over `DB_*`.
 - If MySQL runs on the Windows host itself (not the LAN IP), set `DB_HOST=host.docker.internal` in `.env`.
 
 ## Development
@@ -84,7 +114,7 @@ docker compose up --build
 
 | Service  | URL                            |
 | -------- | ------------------------------ |
-| Frontend | http://localhost:5173          |
+| Frontend | http://localhost:5173/cities   |
 | API      | http://localhost:8000          |
 | API docs | http://localhost:8000/api/docs |
 | DB check | http://localhost:8000/api/health/db |
@@ -118,11 +148,11 @@ docker compose -f docker-compose.prod.yml up -d --build
 
 | Service          | URL                                |
 | ---------------- | ---------------------------------- |
-| App (nginx)      | http://localhost:8080             |
+| App (nginx)      | http://localhost:8080/cities      |
 | API (via nginx)  | http://localhost:8080/api/cities  |
 | API docs         | http://localhost:8080/api/docs    |
 
-- The Vue app is compiled to static files (`npm run build`) and served by nginx.
+- The Vue app is compiled to static files (`npm run build`) and served by nginx (vue-router history fallback serves the app at `/cities`).
 - nginx reverse-proxies `/api/*` to the FastAPI container on the internal Docker network — the backend publishes no host port.
 - FastAPI runs under Gunicorn with 4 Uvicorn workers (adjust worker count in `backend/Dockerfile`).
 
@@ -130,11 +160,13 @@ docker compose -f docker-compose.prod.yml up -d --build
 
 - **App name:** `app_name` in `backend/app/core/config.py` (env `APP_NAME`).
 - **API base path:** all routes mount under `api_prefix` (default `/api`; env `API_PREFIX`, e.g. `/api/v1`).
+- **Frontend route:** the cities page lives at `/cities` (vue-router; everything else redirects there) — `frontend/src/main.js`.
+- **Database table:** `DB_NAME` (schema) + `DB_TABLE` (table) in `.env`; the backend reads the table from these and never creates it.
 - **Full DB override:** `DATABASE_URL` (e.g. `sqlite:///./dev.db` or any SQLAlchemy URL) beats the `DB_*` variables.
 - **Frontend API URL:** `VITE_API_BASE_URL` in `frontend/.env.development` / `frontend/.env.production` — empty = same origin (default Docker setup), or a full URL to call a remote API directly (also allow that origin in `cors_origins`).
 
 ## Where to start coding
 
 - Add API routes in `backend/app/api/routes/` and include them in `backend/app/main.py`; use `Depends(get_db)` to query the database.
-- Add ORM models in `backend/app/models.py`; new tables are created on startup.
+- There are no hardcoded ORM models for city data — `backend/app/api/routes/cities.py` reflects the real table and serves its columns as-is.
 - Build UI in `frontend/src/`; add endpoint URLs to the `endpoints` object in `frontend/src/config.js`.
